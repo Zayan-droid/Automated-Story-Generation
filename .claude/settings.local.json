@@ -1,0 +1,28 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m pytest tests/unit/test_phase1_story.py::test_story_agent_runs_with_mock_provider -x)",
+      "Bash(python -m pytest tests/unit/ -x -q)",
+      "Bash(python -m pytest tests/unit/test_phase2_audio.py::test_audio_agent_full_run -x)",
+      "Bash(python -m pytest tests/integration/ -x)",
+      "Bash(python -m pytest tests/integration/ -x -q)",
+      "Bash(python -m pytest tests/ -q)",
+      "Bash(python main.py \"A young astronaut discovers a hidden ocean on Mars\" --duration 20 --scenes 4 --no-bgm --no-subs)",
+      "Bash(python main.py edit 20260502_185444_d98324)",
+      "Bash(rm -f data/state.db)",
+      "Bash(rm -rf data/outputs/* data/state_versions/*)",
+      "Bash(python main.py \"A young astronaut discovers a hidden ocean on Mars\" --duration 24 --scenes 4 --no-bgm)",
+      "Bash(ffprobe -v error -show_entries format=duration,size,bit_rate -show_entries stream=codec_type,width,height,r_frame_rate -of json \"data/outputs/20260503_083819_1919f9/final_output_subtitled.mp4\")",
+      "Bash(python -m pytest tests/unit/test_phase3_video_v2.py -x -q)",
+      "Bash(python main.py providers)",
+      "Bash(FAL_KEY=\"fake-key-for-test\" python main.py providers)",
+      "Bash(python main.py --help)",
+      "Bash(python main.py \"A young astronaut discovers a hidden ocean on Mars\" --duration 30 --scenes 4)",
+      "Bash(pip install *)",
+      "Bash(python -m pip install fal-client --quiet)",
+      "Bash(python -c \"import fal_client; print\\('fal_client version:', fal_client.__version__\\)\")",
+      "Bash(git init *)",
+      "Bash(git add *)"
+    ]
+  }
+}

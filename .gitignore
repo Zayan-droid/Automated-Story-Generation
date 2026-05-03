@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+.pytest_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Project artifacts (generated outputs are not committed)
+data/outputs/
+data/state_versions/
+data/temp/
+data/state.db
+data/state.db-*
+
+# Frontend build (we don't have one, but just in case)
+frontend/node_modules/
+frontend/dist/
+frontend/.parcel-cache/
+
+# Logs
+*.log

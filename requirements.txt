@@ -1,0 +1,33 @@
+# Core
+pydantic>=2.5,<3
+python-dotenv>=1.0.0
+
+# Web
+fastapi>=0.110
+uvicorn[standard]>=0.27
+websockets>=12.0
+python-multipart>=0.0.9
+
+# Media
+Pillow>=10.0
+gTTS>=2.4
+requests>=2.31
+
+# LLM providers (all optional — pip install only what you use)
+google-generativeai>=0.5; python_version>="3.9"
+openai>=1.20
+anthropic>=0.25
+
+# Real video / lip-sync providers (optional — install only what you use)
+fal-client>=1.0.0        # fal.ai SVD + SadTalker (set FAL_KEY in .env)
+
+# Optional / nice-to-have
+pyttsx3>=2.90        # offline TTS fallback
+moviepy>=1.0.3       # not used by default; available for advanced edits
+opencv-python>=4.8   # not required for default filters but enables advanced ones
+numpy>=1.26          # used by some optional paths
+
+# Test + dev
+pytest>=8.0
+pytest-asyncio>=0.23
+httpx>=0.27          # required by FastAPI TestClient

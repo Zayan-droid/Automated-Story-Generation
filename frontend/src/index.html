@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Agentic Video Generator</title>
+  <link rel="stylesheet" href="/static/styles.css"/>
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">●</span>
+    <span class="title">Agentic Video Generator</span>
+    <span class="tag">prompt → animated short</span>
+  </div>
+  <div class="provider" id="providerBadge">provider: …</div>
+</header>
+
+<main class="layout">
+  <!-- Left column: prompt + phases -->
+  <section class="col col-left">
+    <div class="card">
+      <h2>1. Prompt</h2>
+      <textarea id="prompt" rows="3" placeholder="e.g. A young astronaut discovers a hidden ocean on Mars"></textarea>
+      <div class="row">
+        <label>Duration (s) <input type="number" id="duration" value="40" min="20" max="180"/></label>
+        <label>Scenes <input type="number" id="scenes" value="4" min="2" max="8"/></label>
+        <label class="check"><input type="checkbox" id="bgm" checked/> BGM</label>
+        <label class="check"><input type="checkbox" id="subs" checked/> Subtitles</label>
+      </div>
+      <button id="runBtn" class="primary">Generate</button>
+    </div>
+
+    <div class="card">
+      <h2>2. Pipeline progress</h2>
+      <div class="phases">
+        <div class="phase" id="phase-story">
+          <div class="dot"></div>
+          <div class="label">Story &amp; Script</div>
+          <div class="bar"><span></span></div>
+        </div>
+        <div class="phase" id="phase-audio">
+          <div class="dot"></div>
+          <div class="label">Audio &amp; TTS</div>
+          <div class="bar"><span></span></div>
+        </div>
+        <div class="phase" id="phase-video">
+          <div class="dot"></div>
+          <div class="label">Video Composition</div>
+          <div class="bar"><span></span></div>
+        </div>
+      </div>
+      <div class="row">
+        <button class="secondary" id="rerunStory" disabled>Re-run Story</button>
+        <button class="secondary" id="rerunAudio" disabled>Re-run Audio</button>
+        <button class="secondary" id="rerunVideo" disabled>Re-run Video</button>
+      </div>
+      <pre id="log" class="log"></pre>
+    </div>
+  </section>
+
+  <!-- Middle: video preview -->
+  <section class="col col-mid">
+    <div class="card preview">
+      <h2>3. Preview</h2>
+      <video id="player" controls poster=""></video>
+      <div class="row" id="downloadRow" style="display:none">
+        <a id="downloadVideo" class="primary" download>Download MP4</a>
+        <a id="openProject" class="secondary" target="_blank">Project Folder</a>
+      </div>
+      <div class="meta" id="metaPanel"></div>
+    </div>
+  </section>
+
+  <!-- Right column: edit agent + history -->
+  <section class="col col-right">
+    <div class="card">
+      <h2>4. Edit Agent <small>natural-language</small></h2>
+      <input id="editQuery" placeholder='e.g. "make scene 2 darker", "add subtitles", "speed up"' />
+      <div class="row">
+        <button class="primary" id="applyEdit" disabled>Apply edit</button>
+        <button class="secondary" id="classifyEdit" disabled>Classify only</button>
+      </div>
+      <div class="examples">
+        <span>Try:</span>
+        <button class="chip">make scene 2 darker</button>
+        <button class="chip">apply vintage filter</button>
+        <button class="chip">change voice tone whispered</button>
+        <button class="chip">remove subtitles</button>
+        <button class="chip">add background music tense</button>
+        <button class="chip">speed up</button>
+        <button class="chip">regenerate the script</button>
+      </div>
+      <div id="intentPanel" class="intent" style="display:none"></div>
+    </div>
+
+    <div class="card">
+      <h2>5. Version history</h2>
+      <div id="historyList" class="history">No versions yet.</div>
+    </div>
+  </section>
+</main>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
