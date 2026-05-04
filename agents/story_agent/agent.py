@@ -134,7 +134,7 @@ class StoryAgent:
         # Mock provider -> deterministic template fallback.
         if self.llm.provider == "mock":
             log.info("using template-based fallback (no LLM provider configured)")
-            return template_script(project_id, prompt, target_duration_s=duration_s)
+            return template_script(project_id, prompt, target_duration_s=duration_s, scene_count=scene_count)
 
         scene_duration_ms = (duration_s * 1000) // scene_count
         total_ms = scene_duration_ms * scene_count
@@ -156,7 +156,7 @@ class StoryAgent:
             )
         except Exception as e:  # noqa: BLE001
             log.warning("structured LLM gen failed (%s) — using template fallback", e)
-            return template_script(project_id, prompt, target_duration_s=duration_s)
+            return template_script(project_id, prompt, target_duration_s=duration_s, scene_count=scene_count)
 
     # ---- validation (check_consistency / estimate_duration tools) -------
 

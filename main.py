@@ -79,9 +79,16 @@ def cmd_providers(_args: argparse.Namespace) -> int:
     print(f"  LLM           : {llm.provider}  (model={llm.model})")
     if llm.provider == "mock":
         print("                   set GEMINI_API_KEY / OPENAI_API_KEY / ANTHROPIC_API_KEY for real LLM")
-    print(f"  Image gen     : pollinations.ai (default)"
-          + ("  +  OpenAI" if os.getenv("OPENAI_API_KEY") else "")
-          + (f"  +  Stable Diffusion ({os.getenv('SD_API_URL')})" if sd else ""))
+    local_sd = os.getenv("LOCAL_SD") == "1"
+    if local_sd:
+        img_line = f"local Diffusers ({os.getenv('LOCAL_SD_MODEL', 'stabilityai/sdxl-turbo')})  [primary]"
+    elif sd:
+        img_line = f"Stable Diffusion WebUI ({os.getenv('SD_API_URL')})  [primary]"
+    else:
+        img_line = "pollinations.ai (default)"
+    if os.getenv("OPENAI_API_KEY"):
+        img_line += "  +  OpenAI"
+    print(f"  Image gen     : {img_line}")
     print(f"  TTS           : gTTS (default)"
           + ("  +  ElevenLabs" if eleven else "")
           + "  +  pyttsx3 fallback")

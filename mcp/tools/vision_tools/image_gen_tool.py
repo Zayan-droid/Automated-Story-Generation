@@ -1,10 +1,11 @@
 """Image-generation tool.
 
-Provider precedence:
-1. Pollinations.ai (free, no API key)
-2. OpenAI image API if OPENAI_API_KEY is set and POLLINATIONS_DISABLE=1
-3. Stable Diffusion (Automatic1111) if SD_API_URL is set
-4. PIL placeholder (always works offline) — gradient + scene title overlay
+Provider precedence (when LOCAL_SD=1, local diffusers wins; otherwise default):
+1. Local Diffusers SDXL Turbo  (LOCAL_SD=1, fastest local — uses CUDA GPU)
+2. Stable Diffusion WebUI       (SD_API_URL set — Automatic1111 HTTP API)
+3. Pollinations.ai              (default, free, no API key)
+4. OpenAI image API             (OPENAI_API_KEY + POLLINATIONS_DISABLE=1)
+5. PIL placeholder              (offline gradient fallback)
 """
 from __future__ import annotations
 import hashlib
@@ -18,6 +19,11 @@ from mcp.base_tool import BaseTool, ToolResult
 from shared.utils.logging import get_logger
 
 log = get_logger("image_gen")
+
+# Module-level cache for the diffusers pipeline so we only load it once
+# per process (the model is ~7 GB; loading it 18 times per pipeline run
+# would be unworkable).
+_DIFFUSERS_PIPE = None
 
 
 class ImageGenTool(BaseTool):
@@ -36,7 +42,27 @@ class ImageGenTool(BaseTool):
         full_prompt = f"{prompt}, {style}".strip(", ") if style else prompt
         seed = seed or int(hashlib.md5(prompt.encode()).hexdigest()[:8], 16) % 2**31
 
-        # 1. Pollinations.ai
+        # 1. Local Diffusers SDXL Turbo (fastest if user has CUDA GPU)
+        if os.getenv("LOCAL_SD") == "1":
+            try:
+                self._diffusers_sdxl_turbo(full_prompt, negative_prompt,
+                                           out, width, height, seed)
+                return ToolResult(success=True, data=str(out),
+                                  metadata={"provider": "diffusers_sdxl_turbo",
+                                            "seed": seed})
+            except Exception as e:  # noqa: BLE001
+                log.warning("local diffusers failed (%s) — trying next provider", e)
+
+        # 2. Stable Diffusion WebUI (Automatic1111 HTTP API)
+        if os.getenv("SD_API_URL"):
+            try:
+                self._stable_diffusion(full_prompt, negative_prompt, out, width, height, seed)
+                return ToolResult(success=True, data=str(out),
+                                  metadata={"provider": "stable_diffusion", "seed": seed})
+            except Exception as e:  # noqa: BLE001
+                log.warning("stable diffusion failed (%s) — trying next provider", e)
+
+        # 3. Pollinations.ai (free default)
         if os.getenv("POLLINATIONS_DISABLE") != "1":
             try:
                 self._pollinations(full_prompt, out, width, height, seed)
@@ -45,30 +71,116 @@ class ImageGenTool(BaseTool):
             except Exception as e:  # noqa: BLE001
                 log.warning("pollinations failed (%s) — trying next provider", e)
 
-        # 2. OpenAI image gen
+        # 4. OpenAI image gen
         if os.getenv("OPENAI_API_KEY"):
             try:
                 self._openai_images(full_prompt, out, width, height)
                 return ToolResult(success=True, data=str(out),
                                   metadata={"provider": "openai", "seed": seed})
             except Exception as e:  # noqa: BLE001
-                log.warning("openai image gen failed (%s) — trying next provider", e)
+                log.warning("openai image gen failed (%s) — using PIL placeholder", e)
 
-        # 3. Stable Diffusion (Automatic1111-compatible)
-        if os.getenv("SD_API_URL"):
-            try:
-                self._stable_diffusion(full_prompt, negative_prompt, out, width, height, seed)
-                return ToolResult(success=True, data=str(out),
-                                  metadata={"provider": "stable_diffusion", "seed": seed})
-            except Exception as e:  # noqa: BLE001
-                log.warning("stable diffusion failed (%s) — using PIL placeholder", e)
-
-        # 4. PIL placeholder
+        # 5. PIL placeholder
         self._pil_placeholder(prompt, out, width, height, seed)
         return ToolResult(success=True, data=str(out),
                           metadata={"provider": "pil_placeholder", "seed": seed})
 
     # ---- providers -------------------------------------------------------
+
+    def _diffusers_sdxl_turbo(self, prompt: str, negative: str, out: Path,
+                              w: int, h: int, seed: int) -> None:
+        """Local Stable Diffusion via the diffusers library.
+
+        Tries (in order) SDXL-Turbo with sequential offload, then SD 1.5 as
+        a fallback for low-VRAM GPUs. Pipeline is cached in `_DIFFUSERS_PIPE`
+        so the model only loads once per process.
+
+        On a 6 GB GPU (e.g. RTX 3050 Laptop):
+          - SD 1.5      -> ~3-5 s per image at 512x512
+          - SDXL-Turbo  -> ~15-25 s per image at 512x512 (sequential offload)
+        """
+        global _DIFFUSERS_PIPE
+
+        # Help PyTorch avoid VRAM fragmentation on tight GPUs.
+        os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
+        if _DIFFUSERS_PIPE is None:
+            import torch
+            from diffusers import AutoPipelineForText2Image
+            model_id = os.getenv("LOCAL_SD_MODEL", "stabilityai/sdxl-turbo")
+            log.info("loading %s (first call may take 30-90s)...", model_id)
+
+            try:
+                pipe = AutoPipelineForText2Image.from_pretrained(
+                    model_id,
+                    torch_dtype=torch.float16,
+                    variant="fp16",
+                    use_safetensors=True,
+                )
+            except Exception as e:  # noqa: BLE001
+                log.warning("could not load %s with fp16 variant (%s) — using default", model_id, e)
+                pipe = AutoPipelineForText2Image.from_pretrained(
+                    model_id, torch_dtype=torch.float16,
+                )
+
+            # Aggressive VRAM tweaks for 6 GB GPUs.
+            pipe.enable_attention_slicing("max")
+            pipe.enable_vae_slicing()
+            pipe.enable_vae_tiling()
+            try:
+                # Sequential offload streams layers one at a time — slowest but
+                # has the smallest peak VRAM footprint (works on 4 GB cards).
+                pipe.enable_sequential_cpu_offload()
+                log.info("  using sequential CPU offload (low-VRAM mode)")
+            except Exception:  # noqa: BLE001
+                try:
+                    pipe.enable_model_cpu_offload()
+                    log.info("  using model CPU offload")
+                except Exception:  # noqa: BLE001
+                    pipe = pipe.to("cuda")
+                    log.info("  using full-GPU mode")
+
+            _DIFFUSERS_PIPE = pipe
+            log.info("%s ready", model_id)
+
+        import torch
+        # Turbo is trained at 512x512; render small and scale.
+        target_w = min(w, 768) - (min(w, 768) % 8)
+        target_h = min(h, 768) - (min(h, 768) % 8)
+
+        gen = torch.Generator(device="cpu").manual_seed(int(seed))
+        try:
+            result = _DIFFUSERS_PIPE(
+                prompt=prompt,
+                negative_prompt=negative or None,
+                num_inference_steps=int(os.getenv("LOCAL_SD_STEPS", "4")),
+                guidance_scale=0.0,                 # Turbo is trained for CFG=0
+                width=target_w, height=target_h,
+                generator=gen,
+            )
+        except torch.cuda.OutOfMemoryError:
+            torch.cuda.empty_cache()
+            log.warning("CUDA OOM — retrying at 384x384")
+            target_w = target_h = 384
+            result = _DIFFUSERS_PIPE(
+                prompt=prompt,
+                negative_prompt=negative or None,
+                num_inference_steps=int(os.getenv("LOCAL_SD_STEPS", "4")),
+                guidance_scale=0.0,
+                width=target_w, height=target_h,
+                generator=gen,
+            )
+        finally:
+            try:
+                torch.cuda.empty_cache()
+            except Exception:  # noqa: BLE001
+                pass
+
+        img = result.images[0]
+        if (target_w, target_h) != (w, h):
+            from PIL import Image
+            img = img.resize((w, h), Image.LANCZOS)
+        img.save(out)
 
     def _pollinations(self, prompt: str, out: Path, w: int, h: int, seed: int) -> None:
         import requests
@@ -91,19 +203,37 @@ class ImageGenTool(BaseTool):
 
     def _stable_diffusion(self, prompt: str, negative: str, out: Path,
                           w: int, h: int, seed: int) -> None:
+        """Stable Diffusion WebUI (Automatic1111) HTTP API.
+
+        Auto-detects SDXL Turbo by checking the loaded checkpoint name and
+        switches to Turbo-optimal settings (4 steps, CFG 1, DPM++ SDE).
+        """
         import base64
         import requests
         api = os.environ["SD_API_URL"].rstrip("/")
-        r = requests.post(
-            f"{api}/sdapi/v1/txt2img",
-            json={
-                "prompt": prompt,
-                "negative_prompt": negative,
-                "width": w, "height": h,
-                "seed": seed, "steps": 20, "sampler_index": "Euler a",
-            },
-            timeout=300,
-        )
+
+        # Detect Turbo vs standard SD by checking the loaded checkpoint.
+        is_turbo = False
+        try:
+            opts = requests.get(f"{api}/sdapi/v1/options", timeout=5).json()
+            is_turbo = "turbo" in str(opts.get("sd_model_checkpoint", "")).lower()
+        except Exception:  # noqa: BLE001
+            pass
+
+        if is_turbo:
+            payload = {
+                "prompt": prompt, "negative_prompt": negative,
+                "width": w, "height": h, "seed": seed,
+                "steps": 4, "cfg_scale": 1.0,
+                "sampler_index": "DPM++ SDE",
+            }
+        else:
+            payload = {
+                "prompt": prompt, "negative_prompt": negative,
+                "width": w, "height": h, "seed": seed,
+                "steps": 20, "sampler_index": "Euler a",
+            }
+        r = requests.post(f"{api}/sdapi/v1/txt2img", json=payload, timeout=300)
         r.raise_for_status()
         b64 = r.json()["images"][0]
         out.write_bytes(base64.b64decode(b64))

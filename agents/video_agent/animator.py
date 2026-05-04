@@ -24,14 +24,19 @@ from typing import Dict, List, Optional
 
 
 # Distinct motion patterns that look good on a still image.
+# IMPORTANT: pan presets (`pan_left_subtle`, `pan_right_subtle`) were removed
+# because ffmpeg's `zoompan` filter operates on integer pixel coordinates —
+# fractional motion like `x+0.6` per frame rounds inconsistently, producing
+# visible micro-shake especially on detail-rich landscape shots. We keep only
+# centered zooms + the locked `static_hold`, which are pixel-stable.
 MOTION_PRESETS = [
     "slow_zoom_in",
     "slow_zoom_out",
-    "pan_left_subtle",
-    "pan_right_subtle",
-    "ken_burns_diag",
-    "ken_burns_diag_rev",
-    "static_breathing",
+    "static_hold",
+    "very_slow_zoom_in",
+    "static_hold",         # weighted: half of all shots are locked
+    "slow_zoom_in",
+    "very_slow_zoom_in",
 ]
 
 
@@ -75,12 +80,17 @@ def render_shot(shot: Shot, out_path: Path, width: int, height: int, fps: int,
     frames = max(1, int(round(dur_s * fps)))
     motion_filter = _motion_filter_for(shot.motion, frames, width, height)
 
-    # Cinematic post-chain: subtle vignette + grain + colour grading nudge.
+    # Cinematic post-chain: subtle vignette + (static) grain + colour grading.
+    # IMPORTANT: we use SPATIAL grain only (no `t` flag) — temporal grain
+    # generates fresh noise every frame, which the eye reads as visible
+    # shimmer / vibration across the whole image. A single static noise
+    # pattern still gives a film feel without the shake.
     post = []
     if add_vignette:
         post.append("vignette=PI/5")
     if add_grain:
-        post.append("noise=alls=4:allf=t+u")
+        # `alls=2` (low strength) + `allf=u` (uniform spatial only, no `t`).
+        post.append("noise=alls=2:allf=u")
     # Colour grading: very mild S-curve.
     post.append("eq=contrast=1.04:saturation=1.06")
     post.append("format=yuv420p")
@@ -168,31 +178,27 @@ def _motion_filter_for(motion: str, frames: int, w: int, h: int) -> str:
     """Return a `zoompan=...` filter string for the requested motion."""
     f = max(1, frames)
     sw, sh = w, h
+    # All motions are CENTERED zoom only — no pans, no diagonal drift.
+    # We keep zoom rates very low (≤ 0.0005 per frame) so any residual
+    # pixel-rounding is invisible to the eye.
+    if motion == "very_slow_zoom_in":
+        # Barely-perceptible zoom: 1.00 -> ~1.06 over the whole shot.
+        return (f"zoompan=z='min(zoom+0.0003,1.10)':d={f}:"
+                f"x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s={sw}x{sh}")
     if motion == "slow_zoom_in":
-        return (f"zoompan=z='min(zoom+0.0010,1.30)':d={f}:"
-                f"x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s={sw}x{sh}:fps={f/(f/24)}")
+        return (f"zoompan=z='min(zoom+0.0005,1.18)':d={f}:"
+                f"x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s={sw}x{sh}")
     if motion == "slow_zoom_out":
-        return (f"zoompan=z='if(eq(on,0),1.30,max(zoom-0.0010,1.0))':d={f}:"
+        return (f"zoompan=z='if(eq(on,0),1.18,max(zoom-0.0005,1.0))':d={f}:"
                 f"x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s={sw}x{sh}")
-    if motion == "pan_left_subtle":
-        return (f"zoompan=z=1.18:x='if(eq(on,0),iw-iw/zoom,max(0,x-1.5))':"
-                f"y='ih/2-(ih/zoom/2)':d={f}:s={sw}x{sh}")
-    if motion == "pan_right_subtle":
-        return (f"zoompan=z=1.18:x='if(eq(on,0),0,min(iw-iw/zoom,x+1.5))':"
-                f"y='ih/2-(ih/zoom/2)':d={f}:s={sw}x{sh}")
-    if motion == "ken_burns_diag":
-        return (f"zoompan=z='min(zoom+0.0008,1.22)':d={f}:"
-                f"x='if(eq(on,0),0,min(iw-iw/zoom,x+0.6))':"
-                f"y='if(eq(on,0),0,min(ih-ih/zoom,y+0.4))':s={sw}x{sh}")
-    if motion == "ken_burns_diag_rev":
-        return (f"zoompan=z='min(zoom+0.0008,1.22)':d={f}:"
-                f"x='if(eq(on,0),iw-iw/zoom,max(0,x-0.6))':"
-                f"y='if(eq(on,0),ih-ih/zoom,max(0,y-0.4))':s={sw}x{sh}")
-    if motion == "static_breathing":
-        return (f"zoompan=z='1.0+0.015*sin(2*PI*on/{max(1,f)})':d={f}:"
+    if motion in ("static_hold", "static_breathing",
+                  "pan_left_subtle", "pan_right_subtle",
+                  "ken_burns_diag", "ken_burns_diag_rev"):
+        # Pan / ken-burns presets now collapse to a stable centered hold.
+        return (f"zoompan=z=1.10:d={f}:"
                 f"x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s={sw}x{sh}")
-    # default
-    return (f"zoompan=z='min(zoom+0.0008,1.22)':d={f}:"
+    # default — gentle centered zoom in.
+    return (f"zoompan=z='min(zoom+0.0003,1.10)':d={f}:"
             f"x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s={sw}x{sh}")
 
 

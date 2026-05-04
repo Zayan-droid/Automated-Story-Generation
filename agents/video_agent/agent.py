@@ -125,19 +125,23 @@ class VideoAgent:
         portraits: Dict[str, CharacterPortrait] = {}
         for c in state.script.characters.characters:
             out = port_dir / f"{c.id}.png"
+            # Anime / cartoon style — cel-shaded, vibrant, Studio Ghibli inspired.
             prompt = (
-                f"close-up portrait of {c.name}, {c.visual_description}, "
-                f"{c.role}, expressive face, looking at camera, "
-                f"shallow depth of field, cinematic 50mm lens, "
-                f"soft rim lighting, photorealistic, highly detailed"
+                f"anime style close-up portrait of {c.name}, {c.visual_description}, "
+                f"{c.role}, expressive face, large detailed eyes, looking at camera, "
+                f"vibrant colors, cel-shaded, clean line art, soft anime lighting"
             )
             self.tools.execute(
                 "vision.generate_image",
                 prompt=prompt,
                 out_path=str(out),
                 width=width, height=height,
-                style="cinematic portrait, dramatic lighting, 8k, photorealistic",
-                negative_prompt="blurry, low quality, distorted, deformed, text, watermark",
+                style=("anime, studio ghibli style, cel-shaded, "
+                       "vibrant saturated colors, clean detailed line art, "
+                       "soft cinematic lighting, masterpiece, high quality"),
+                negative_prompt=("blurry, low quality, jpeg artifacts, deformed, "
+                                 "extra limbs, mutated, ugly, photograph, photorealistic, "
+                                 "3d render, text, watermark, signature"),
             )
             portraits[c.id] = CharacterPortrait(
                 character_id=c.id,
@@ -151,6 +155,11 @@ class VideoAgent:
     def _generate_scene_assets(self, state: PipelineState,
                                width: int, height: int, fps: int,
                                use_text_to_video: bool) -> Dict[str, dict]:
+        """Generate a 'shot bank' for each scene: 1 wide + 2 B-roll variations.
+
+        We rotate between these images while a single scene's audio plays so
+        the viewer never sees one frame on screen for more than ~4 seconds.
+        """
         proj = project_dir(state.project_id)
         img_dir = proj / "video" / "frames"
         clip_dir = proj / "video" / "clips"
@@ -158,28 +167,45 @@ class VideoAgent:
         for d in (img_dir, clip_dir, t2v_dir):
             d.mkdir(parents=True, exist_ok=True)
 
+        # Per-scene shot-bank prompt suffixes — three deliberately different
+        # framings of the same scene so cuts feel meaningful, not random.
+        broll_styles = [
+            ("wide",   "wide establishing shot, full landscape, expansive composition"),
+            ("detail", "extreme close-up detail, macro, intricate texture, shallow depth of field"),
+            ("alt",    "alternate angle, low-angle hero shot, dramatic perspective, dynamic framing"),
+        ]
+
         assets: Dict[str, dict] = {}
         for scene in state.script.scenes:
-            img_out = img_dir / f"{scene.scene_id}.png"
-            self.tools.execute(
-                "vision.generate_image",
-                prompt=scene.visual_prompt,
-                out_path=str(img_out),
-                width=width, height=height,
-                style="cinematic, dramatic lighting, highly detailed, 8k",
-                negative_prompt="blurry, low quality, text, watermark, distorted",
-            )
-            entry = {"image": str(img_out), "t2v": None}
+            shot_bank: List[str] = []
+            for tag, suffix in broll_styles:
+                out_path = img_dir / f"{scene.scene_id}_{tag}.png"
+                self.tools.execute(
+                    "vision.generate_image",
+                    prompt=f"anime scene of {scene.visual_prompt}, {suffix}",
+                    out_path=str(out_path),
+                    width=width, height=height,
+                    style=("anime, studio ghibli style, cel-shaded, "
+                           "vibrant saturated colors, clean detailed line art, "
+                           "soft cinematic lighting, painterly background, "
+                           "masterpiece, high quality, ultra detailed"),
+                    negative_prompt=("blurry, low quality, jpeg artifacts, "
+                                     "photograph, photorealistic, 3d render, "
+                                     "text, watermark, signature, deformed"),
+                )
+                shot_bank.append(str(out_path))
+                log.info("  scene %s %s shot -> %s", scene.scene_id, tag, out_path.name)
+
+            entry = {"image": shot_bank[0], "shot_bank": shot_bank, "t2v": None}
 
             if use_text_to_video:
                 t2v_out = t2v_dir / f"{scene.scene_id}.mp4"
-                # Image-to-video — pass the still we just generated to give
-                # the model a strong visual anchor (it's much more reliable
-                # than pure text-to-video for free-tier providers).
+                # Image-to-video — pass the wide establishing still we just
+                # generated to give the model a strong visual anchor.
                 res = self.tools.execute(
                     "vision.text_to_video",
                     prompt=scene.visual_prompt,
-                    image_path=str(img_out),
+                    image_path=shot_bank[0],
                     out_path=str(t2v_out),
                     duration_s=min(4.0, scene.duration_ms / 1000.0),
                     width=width, height=height, fps=fps,
@@ -213,139 +239,140 @@ class VideoAgent:
                 if seg.kind == "dialogue":
                     seg_by_scene.setdefault(seg.scene_id, []).append(seg)
 
+        # Maximum on-screen duration for any single image before we force a
+        # cut. Keeping this ≤ 5 s prevents the "static-frame" feeling.
+        MAX_SHOT_MS = 4500
+        MIN_SHOT_MS = 1500
+
         frames: List[SceneFrame] = []
         for scene in state.script.scenes:
             asset = scene_assets[scene.scene_id]
-            establishing = asset["t2v"] or asset["image"]   # prefer real video
-            establishing_is_video = bool(asset["t2v"])
+            shot_bank: List[str] = asset.get("shot_bank") or [asset["image"]]
+            establishing_video = asset["t2v"]
 
             scene_segments = seg_by_scene.get(scene.scene_id, [])
             shots: List[Shot] = []
             rendered_paths: List[Path] = []
 
-            if not scene_segments:
-                # No dialogue -> single establishing shot for the scene's full duration.
-                rs = RenderShot(
-                    image_path=establishing,
-                    duration_ms=scene.duration_ms,
-                    motion=pick_motion_for_index(scene.index, 0),
-                    is_lip_sync=establishing_is_video,
-                )
-                rendered = render_shot(
-                    rs, shot_dir / f"{scene.scene_id}_s0.mp4",
-                    width, height, fps,
-                    add_grain=cinematic_post, add_vignette=cinematic_post,
-                )
-                rendered_paths.append(rendered)
-                shots.append(Shot(
-                    shot_id=f"{scene.scene_id}_s0",
-                    scene_id=scene.scene_id,
-                    kind="establishing",
-                    image_path=asset["image"],
-                    clip_path=str(rendered),
-                    duration_ms=scene.duration_ms,
-                    motion=rs.motion,
-                ))
-            else:
-                # Always start with a brief establishing shot (15-30% of scene duration)
-                # so the audience grasps the setting before cuts begin.
-                est_ms = max(800, int(scene.duration_ms * 0.20))
-                est_motion = pick_motion_for_index(scene.index, 0)
-                est_rs = RenderShot(
-                    image_path=establishing,
-                    duration_ms=est_ms,
-                    motion=est_motion,
-                    is_lip_sync=establishing_is_video,
-                )
-                est_path = render_shot(
-                    est_rs, shot_dir / f"{scene.scene_id}_est.mp4",
-                    width, height, fps,
-                    add_grain=cinematic_post, add_vignette=cinematic_post,
-                )
-                rendered_paths.append(est_path)
-                shots.append(Shot(
-                    shot_id=f"{scene.scene_id}_est",
-                    scene_id=scene.scene_id,
-                    kind="establishing",
-                    image_path=asset["image"],
-                    clip_path=str(est_path),
-                    duration_ms=est_ms,
-                    motion=est_motion,
-                ))
+            # ---- helper: split a (src_image, total_ms) into multiple cuts -----
+            def emit_split_shots(src_images: List[str], total_ms: int,
+                                 base_id: str, kind: str,
+                                 char_id: Optional[str],
+                                 audio_path: Optional[str] = None) -> None:
+                """Render `total_ms` of footage as N consecutive sub-clips,
+                cycling through src_images so no single image plays > MAX_SHOT_MS."""
+                if total_ms <= MAX_SHOT_MS or len(src_images) <= 1:
+                    # Single shot is fine.
+                    motion = pick_motion_for_index(scene.index, len(shots))
+                    rs = RenderShot(image_path=src_images[0],
+                                    duration_ms=total_ms, motion=motion)
+                    out_path = shot_dir / f"{base_id}.mp4"
+                    rendered = render_shot(
+                        rs, out_path, width, height, fps,
+                        add_grain=cinematic_post, add_vignette=cinematic_post,
+                    )
+                    rendered_paths.append(rendered)
+                    shots.append(Shot(
+                        shot_id=base_id, scene_id=scene.scene_id, kind=kind,
+                        character_id=char_id, image_path=src_images[0],
+                        clip_path=str(rendered),
+                        duration_ms=total_ms, motion=motion,
+                        audio_path=audio_path,
+                    ))
+                    return
 
-                # One sub-clip per dialogue line, using the appropriate portrait.
+                # Compute how many cuts we need.
+                n_cuts = max(2, (total_ms + MAX_SHOT_MS - 1) // MAX_SHOT_MS)
+                per = max(MIN_SHOT_MS, total_ms // n_cuts)
+                remainder = total_ms - per * (n_cuts - 1)
+                durations = [per] * (n_cuts - 1) + [remainder]
+                for j, dur_ms in enumerate(durations):
+                    img = src_images[j % len(src_images)]
+                    motion = pick_motion_for_index(scene.index, len(shots))
+                    sub_id = f"{base_id}_p{j+1}"
+                    out_path = shot_dir / f"{sub_id}.mp4"
+                    rs = RenderShot(image_path=img, duration_ms=dur_ms, motion=motion)
+                    rendered = render_shot(
+                        rs, out_path, width, height, fps,
+                        add_grain=cinematic_post, add_vignette=cinematic_post,
+                    )
+                    rendered_paths.append(rendered)
+                    shots.append(Shot(
+                        shot_id=sub_id, scene_id=scene.scene_id, kind=kind,
+                        character_id=char_id, image_path=img,
+                        clip_path=str(rendered),
+                        duration_ms=dur_ms, motion=motion,
+                        audio_path=audio_path if j == 0 else None,
+                    ))
+
+            # ---- 1. Establishing tail (no dialogue case or pre-roll) -------
+            if not scene_segments:
+                emit_split_shots(shot_bank, scene.duration_ms,
+                                 base_id=f"{scene.scene_id}_s",
+                                 kind="establishing", char_id=None)
+            else:
+                # Brief establishing pre-roll (15-25% of scene).
+                est_ms = max(MIN_SHOT_MS, min(MAX_SHOT_MS,
+                                              int(scene.duration_ms * 0.18)))
+                emit_split_shots(shot_bank[:1], est_ms,
+                                 base_id=f"{scene.scene_id}_est",
+                                 kind="establishing", char_id=None)
+
+                # ---- 2. One (or more) sub-clip(s) per dialogue line --------
                 for i, seg in enumerate(scene_segments):
                     char = next(
                         (c for c in state.script.characters.characters
                          if c.id == seg.character_id), None,
                     )
                     is_narrator = char is not None and char.role == "narrator"
+                    base_id = f"{scene.scene_id}_l{i+1}"
+
                     if is_narrator:
-                        # Narrator lines stay on the establishing shot — different motion.
-                        src = establishing
-                        kind: str = "establishing"
+                        # Narrator: rotate through the entire shot bank so the
+                        # audience sees the world, not one frozen wide shot.
+                        src_images = shot_bank
+                        kind = "establishing"
                         char_id = None
-                        is_video = establishing_is_video
                     else:
                         portrait = portraits.get(seg.character_id)
-                        src = portrait.image_path if portrait else establishing
+                        portrait_src = portrait.image_path if portrait else shot_bank[0]
+                        # For character lines: lead with portrait, optionally
+                        # cut to a B-roll reaction shot in the middle if line is long.
+                        if seg.duration_ms > MAX_SHOT_MS:
+                            # portrait → b-roll → portrait pattern
+                            src_images = [portrait_src, shot_bank[1 % len(shot_bank)],
+                                          portrait_src]
+                        else:
+                            src_images = [portrait_src]
                         kind = "character"
                         char_id = seg.character_id
-                        is_video = False
 
-                    motion = pick_motion_for_index(scene.index, i + 1)
-                    shot_id = f"{scene.scene_id}_l{i+1}"
-                    out_path = shot_dir / f"{shot_id}.mp4"
-
-                    # Real lip sync? Try only for character portraits (not narrator),
-                    # only if we have audio, and only if the user opted in.
-                    used_lip = False
+                    # Real lip-sync attempt (character lines only).
                     if (use_lip_sync and not is_narrator
                             and seg.file_path and Path(seg.file_path).exists()):
+                        ls_out = shot_dir / f"{base_id}.mp4"
                         ls_res = self.tools.execute(
                             "vision.lip_sync",
-                            image_path=src,
+                            image_path=src_images[0],
                             audio_path=seg.file_path,
-                            out_path=str(out_path),
+                            out_path=str(ls_out),
                             duration_s=seg.duration_ms / 1000.0,
                             width=width, height=height, fps=fps,
                         )
                         if ls_res.success and ls_res.metadata.get("provider", "").startswith(("fal", "replicate")):
-                            used_lip = True
-                            kind = "lip_sync"
-                            rendered_paths.append(out_path)
+                            rendered_paths.append(ls_out)
                             shots.append(Shot(
-                                shot_id=shot_id, scene_id=scene.scene_id, kind=kind,
-                                character_id=char_id,
-                                image_path=src,
-                                clip_path=str(out_path),
-                                duration_ms=seg.duration_ms,
-                                motion="lip_sync",
+                                shot_id=base_id, scene_id=scene.scene_id,
+                                kind="lip_sync", character_id=char_id,
+                                image_path=src_images[0], clip_path=str(ls_out),
+                                duration_ms=seg.duration_ms, motion="lip_sync",
                                 audio_path=seg.file_path,
                             ))
                             continue
 
-                    # Default path: cinematic still-with-motion sub-clip.
-                    rs = RenderShot(
-                        image_path=src,
-                        duration_ms=seg.duration_ms,
-                        motion=motion,
-                        is_lip_sync=is_video,
-                    )
-                    rendered = render_shot(
-                        rs, out_path, width, height, fps,
-                        add_grain=cinematic_post,
-                        add_vignette=cinematic_post and is_narrator,
-                    )
-                    rendered_paths.append(rendered)
-                    shots.append(Shot(
-                        shot_id=shot_id, scene_id=scene.scene_id, kind=kind,
-                        character_id=char_id,
-                        image_path=src,
-                        clip_path=str(rendered),
-                        duration_ms=seg.duration_ms,
-                        motion=motion,
-                    ))
+                    # Default: split into multiple cuts if the line is long.
+                    emit_split_shots(src_images, seg.duration_ms,
+                                     base_id=base_id, kind=kind, char_id=char_id)
 
             # Stitch the scene's sub-clips together with short crossfades.
             scene_clip = scene_dir / f"{scene.scene_id}.mp4"
@@ -402,7 +429,7 @@ class VideoAgent:
         sub_res = self.tools.execute(
             "video.subtitle",
             in_path=str(out), out_path=str(subbed),
-            lines=sub_lines, font_size=28,
+            lines=sub_lines, font_size=20,
         )
         if sub_res.success:
             return subbed

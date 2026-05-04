@@ -20,7 +20,6 @@ caller falls back to the ffmpeg ken-burns animator.
 from __future__ import annotations
 import base64
 import os
-import time
 from pathlib import Path
 from typing import Optional
 
@@ -162,42 +161,48 @@ class TextToVideoTool(BaseTool):
 
     def _replicate(self, prompt: str, image_path: Optional[str], out: Path,
                    duration_s: float, w: int, h: int) -> None:
+        """Run text-to-video / image-to-video via the Replicate Python SDK."""
+        import replicate
         import requests
-        token = os.environ["REPLICATE_API_TOKEN"]
-        headers = {"Authorization": f"Token {token}", "Content-Type": "application/json"}
-        if image_path and Path(image_path).exists():
-            with open(image_path, "rb") as f:
-                img_b64 = base64.b64encode(f.read()).decode()
-            input_data = {
-                "input_image": f"data:image/png;base64,{img_b64}",
-                "video_length": "14_frames_with_svd",
-                "frames_per_second": 6,
-            }
-            model = "stability-ai/stable-video-diffusion"
-        else:
-            input_data = {"prompt": prompt, "num_frames": int(duration_s * 8)}
-            model = "anotherjesse/zeroscope-v2-xl"
 
-        r = requests.post("https://api.replicate.com/v1/predictions",
-                          headers=headers,
-                          json={"version": model, "input": input_data},
-                          timeout=60)
+        if image_path and Path(image_path).exists():
+            log.info("replicate: submitting stability-ai/stable-video-diffusion ...")
+            with open(image_path, "rb") as img_f:
+                output = replicate.run(
+                    "stability-ai/stable-video-diffusion",
+                    input={
+                        "input_image": img_f,
+                        "video_length": "25_frames_with_svd_xt",
+                        "fps_id": 6,
+                        "motion_bucket_id": 127,
+                        "cond_aug": 0.02,
+                        "decoding_t": 7,
+                    },
+                )
+        else:
+            log.info("replicate: submitting lucataco/zeroscope-v2-xl (t2v) ...")
+            output = replicate.run(
+                "lucataco/zeroscope-v2-xl:9f747673945c62801b13b84701c783929c0ee784e4748ec062204894dda1a351",
+                input={
+                    "prompt": prompt,
+                    "num_frames": max(16, int(duration_s * 8)),
+                    "fps": 8,
+                    "width": min(w, 1024),
+                    "height": min(h, 576),
+                    "num_inference_steps": 40,
+                },
+            )
+
+        url = output if isinstance(output, str) else (
+            output[0] if isinstance(output, list) else None
+        )
+        if not url:
+            raise RuntimeError(f"no output URL from replicate: {output}")
+
+        log.info("replicate: downloading video ...")
+        r = requests.get(url, timeout=300)
         r.raise_for_status()
-        pred = r.json()
-        get_url = pred["urls"]["get"]
-        for _ in range(120):
-            time.sleep(2)
-            check = requests.get(get_url, headers=headers, timeout=30).json()
-            if check["status"] == "succeeded":
-                vid_url = (check["output"] if isinstance(check["output"], str)
-                           else check["output"][0])
-                vid = requests.get(vid_url, timeout=300)
-                vid.raise_for_status()
-                out.write_bytes(vid.content)
-                return
-            if check["status"] == "failed":
-                raise RuntimeError(f"replicate failed: {check.get('error')}")
-        raise TimeoutError("replicate prediction timed out after 4 minutes")
+        out.write_bytes(r.content)
 
     def _huggingface(self, prompt: str, out: Path, duration_s: float,
                      w: int, h: int) -> None:

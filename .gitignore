@@ -31,3 +31,7 @@ frontend/.parcel-cache/
 
 # Logs
 *.log
+
+# Claude Code runtime files
+.claude/scheduled_tasks.lock
+.claude/tasks/

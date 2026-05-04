@@ -49,12 +49,14 @@ def _title_from_prompt(prompt: str) -> str:
     return " ".join(w.capitalize() for w in words)
 
 
-def template_script(project_id: str, prompt: str, target_duration_s: int = 45) -> ScriptOutput:
+def template_script(project_id: str, prompt: str,
+                    target_duration_s: int = 45,
+                    scene_count: int = 4) -> ScriptOutput:
     genre, themes = _detect_genre(prompt)
     rng = _seeded_rng(prompt)
     title = _title_from_prompt(prompt)
     logline = (f"In a {genre} world, {prompt.strip().rstrip('.')}, "
-               f"unfolding in four short acts.")
+               f"unfolding in {scene_count} short acts.")
 
     characters = CharacterRoster(characters=[
         Character(
@@ -90,41 +92,74 @@ def template_script(project_id: str, prompt: str, target_duration_s: int = 45) -
         ),
     ])
 
-    arc = [
-        ("Opening",   "neutral",   "ambient",    "wide establishing shot, soft natural light",  "fade"),
-        ("Inciting",  "curious",   "mysterious", "medium shot, cool palette, gentle motion",     "fade"),
-        ("Climax",    "tense",     "epic",       "close-up, dramatic backlight, high contrast",  "cut"),
-        ("Resolution","reflective","ethereal",   "wide aerial pull-back, golden-hour lighting",  "fade"),
+    base_arc = [
+        ("Opening",       "neutral",   "ambient",    "wide establishing shot, soft natural light",  "fade"),
+        ("Inciting",      "curious",   "mysterious", "medium shot, cool palette, gentle motion",     "fade"),
+        ("Discovery",     "wonder",    "ethereal",   "low-angle reveal, beams of light, awe",        "fade"),
+        ("Complication",  "uneasy",    "tense",      "handheld, dutch angle, off-balance framing",   "cut"),
+        ("Climax",        "tense",     "epic",       "close-up, dramatic backlight, high contrast",  "cut"),
+        ("Aftermath",     "somber",    "melancholy", "wide static, faded colour, quiet stillness",   "fade"),
+        ("Resolution",    "reflective","ethereal",   "wide aerial pull-back, golden-hour lighting",  "fade"),
+        ("Epilogue",      "hopeful",   "uplifting",  "slow dolly forward, warm rim light",           "fade"),
     ]
-    seg = max(4, target_duration_s // 4)
+    # Choose scene_count beats from base_arc, always keeping Opening + Resolution.
+    n = max(2, min(scene_count, len(base_arc)))
+    if n == len(base_arc):
+        arc = base_arc
+    else:
+        # Always include first (Opening) and last (Resolution); evenly sample in between.
+        middle = base_arc[1:-1]
+        if n - 2 > 0:
+            step = max(1, len(middle) // (n - 2))
+            picked = middle[::step][: n - 2]
+            arc = [base_arc[0]] + picked + [base_arc[-1]]
+        else:
+            arc = [base_arc[0], base_arc[-1]]
+
+    # ---- per-scene budget so total audio ~= target_duration_s ----------
+    # We aim for ~85% of target budget as actual dialogue audio (the rest
+    # is establishing-shot motion, transitions, breathing room).
+    total_budget_ms = int(target_duration_s * 1000 * 0.92)
+    per_scene_budget_ms = max(8000, total_budget_ms // n)
+
     scenes: List[Scene] = []
     for i, (label, tone, mood, camera, transition) in enumerate(arc):
         scene_id = f"scene_{i+1}"
         beat = _scene_beat(label, prompt, rng)
-        # Each scene gets the narrator + the protagonist + (sometimes) Kai.
+
+        # Base dialogue (3 turns) — narrator opens, protagonist responds, supporting reacts.
+        line_specs = [
+            ("char_narrator",    beat["narration"],     "reflective", 4500),
+            ("char_protagonist", beat["aria"],          tone,         3500),
+            ("char_supporting",  beat["kai"],           "concerned",  3500),
+        ]
+
+        # If the per-scene budget is bigger than the base dialogue, add extra
+        # back-and-forth exchanges until the budget is met.
+        extra_pool = _extra_exchanges(label, prompt, rng)
+        used_ms = sum(d for _, _, _, d in line_specs)
+        ex_idx = 0
+        while used_ms < per_scene_budget_ms and ex_idx < len(extra_pool):
+            line_specs.append(extra_pool[ex_idx])
+            used_ms += extra_pool[ex_idx][3]
+            ex_idx += 1
+        # If still under budget (e.g. very long target), cycle through pool again.
+        while used_ms < per_scene_budget_ms:
+            spec = extra_pool[ex_idx % len(extra_pool)]
+            line_specs.append(spec)
+            used_ms += spec[3]
+            ex_idx += 1
+
         lines: List[DialogueLine] = []
-        lines.append(DialogueLine(
-            line_id=f"{scene_id}_l1",
-            character_id="char_narrator",
-            text=beat["narration"],
-            emotion="reflective",
-            duration_ms=4500,
-        ))
-        lines.append(DialogueLine(
-            line_id=f"{scene_id}_l2",
-            character_id="char_protagonist",
-            text=beat["aria"],
-            emotion=tone,
-            duration_ms=3500,
-        ))
-        if i in (1, 2):
+        for j, (char_id, text, emo, dur_ms) in enumerate(line_specs):
             lines.append(DialogueLine(
-                line_id=f"{scene_id}_l3",
-                character_id="char_supporting",
-                text=beat["kai"],
-                emotion="concerned" if i == 1 else "urgent",
-                duration_ms=3500,
+                line_id=f"{scene_id}_l{j+1}",
+                character_id=char_id,
+                text=text,
+                emotion=emo,
+                duration_ms=dur_ms,
             ))
+
         scenes.append(Scene(
             scene_id=scene_id,
             index=i,
@@ -135,7 +170,7 @@ def template_script(project_id: str, prompt: str, target_duration_s: int = 45) -
                 f"{beat['visual']}, {camera}, cinematic, highly detailed, dramatic lighting"
             ),
             camera=camera,
-            duration_ms=seg * 1000,
+            duration_ms=used_ms + 2000,  # +2s breathing room (establishing motion)
             dialogue=lines,
             music_mood=mood,
             transition_in=transition,
@@ -154,6 +189,31 @@ def template_script(project_id: str, prompt: str, target_duration_s: int = 45) -
         target_duration_s=target_duration_s,
     )
     return ScriptOutput(story=story, characters=characters, scenes=scenes)
+
+
+def _extra_exchanges(label: str, prompt: str, rng: random.Random) -> list:
+    """Bank of additional dialogue turns used to scale a scene to its budget.
+
+    Returns a list of (character_id, text, emotion, duration_ms) tuples.
+    Each entry is ~3-5s of speech.
+    """
+    p = prompt.strip().rstrip(".")
+    common = [
+        ("char_narrator",    "Time slowed, the way it always does in moments that matter.",                 "reflective",   4500),
+        ("char_protagonist", "I've been waiting for something like this my whole life.",                    "wonder",       4000),
+        ("char_supporting",  "I want to believe you. I just don't want to lose you to it.",                 "uncertain",    4500),
+        ("char_narrator",    "There are choices that change us before we make them.",                       "thoughtful",   4500),
+        ("char_protagonist", "Whatever this is, I'm not turning back. Not now.",                            "determined",   3800),
+        ("char_supporting",  "Then promise me one thing — that you'll come back the same.",                 "pleading",     4500),
+        ("char_narrator",    "And so they pressed on, into the heart of what they could not yet name.",     "ominous",      5000),
+        ("char_protagonist", "Do you hear it too? The way the silence is shaped, like it's holding its breath.", "curious",  4500),
+        ("char_supporting",  "I hear it. And I don't think we should pretend we don't.",                    "serious",      4500),
+        ("char_narrator",    "Stories like this never start where you think they do.",                      "wise",         4000),
+        ("char_protagonist", "Every step away from home feels heavier — and lighter — at the same time.",   "conflicted",   4800),
+        ("char_supporting",  "We knew it would cost something. We just didn't know what.",                  "resigned",     4500),
+    ]
+    rng.shuffle(common)
+    return common
 
 
 def _scene_beat(label: str, prompt: str, rng: random.Random) -> dict:
@@ -176,6 +236,24 @@ def _scene_beat(label: str, prompt: str, rng: random.Random) -> dict:
             "aria": "Did you see that? It wasn't there a second ago.",
             "kai": "We should turn back. We don't know what this is.",
         }
+    if label == "Discovery":
+        return {
+            "title": "The thing itself",
+            "setting": "the place where what was hidden is finally revealed",
+            "visual": f"{p}, awe-struck reveal, beams of light, monumental scale",
+            "narration": "And there it was — exactly as the old stories had said it would be.",
+            "aria": "I can't believe what I'm looking at. It's actually real.",
+            "kai": "I owe you an apology. I shouldn't have doubted.",
+        }
+    if label == "Complication":
+        return {
+            "title": "When the ground shifted",
+            "setting": "the moment when nothing goes the way it was meant to",
+            "visual": f"{p}, sudden disturbance, chaos breaking through, danger emerging",
+            "narration": "But every gift comes with a price, and the price had begun to come due.",
+            "aria": "Something is wrong. We need to move — now.",
+            "kai": "I told you we shouldn't have come this deep.",
+        }
     if label == "Climax":
         return {
             "title": "The choice",
@@ -184,6 +262,24 @@ def _scene_beat(label: str, prompt: str, rng: random.Random) -> dict:
             "narration": "There are moments that ask everything of us. This was one.",
             "aria": "If I don't try now, I never will. I have to know.",
             "kai": "Then I'm with you. Whatever this costs.",
+        }
+    if label == "Aftermath":
+        return {
+            "title": "What was left",
+            "setting": "the silent place after the storm has passed",
+            "visual": f"{p}, quiet aftermath, dust settling, soft scattered light",
+            "narration": "When the noise faded, what remained was the truth they had been running from.",
+            "aria": "I don't know who I am after this.",
+            "kai": "Then we figure it out. Together. One step at a time.",
+        }
+    if label == "Epilogue":
+        return {
+            "title": "Where the road kept going",
+            "setting": "a new horizon, a new beginning",
+            "visual": f"{p}, sunrise on a new world, warm hopeful tones, journey continuing",
+            "narration": "Every ending is also the start of a story someone else will tell.",
+            "aria": "I think I'm finally ready for what comes next.",
+            "kai": "Then let's go find it.",
         }
     return {
         "title": "What we became",

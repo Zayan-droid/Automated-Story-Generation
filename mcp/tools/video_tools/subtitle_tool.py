@@ -20,7 +20,7 @@ class SubtitleTool(BaseTool):
     category = "video"
 
     def run(self, in_path: str, out_path: str, lines: List[Dict[str, Any]],
-            font_size: int = 28, **_) -> ToolResult:
+            font_size: int = 20, **_) -> ToolResult:
         in_p = Path(in_path)
         out_p = Path(out_path)
         out_p.parent.mkdir(parents=True, exist_ok=True)
@@ -28,10 +28,16 @@ class SubtitleTool(BaseTool):
         srt_p.write_text(self._build_srt(lines), encoding="utf-8")
         # ffmpeg's subtitles filter wants forward slashes even on Windows.
         srt_arg = srt_p.resolve().as_posix().replace(":", "\\:")
+        # BorderStyle=1 = outline only (no opaque box).
+        # Alignment=2 = bottom-center (ASS standard).
+        # MarginV=40 keeps lines off the very edge.
+        # WrapStyle=2 = no automatic line breaks unless we add \N (forces single line then wraps to 2).
         vf = (f"subtitles='{srt_arg}':"
               f"force_style='FontName=Arial,FontSize={font_size},"
-              f"PrimaryColour=&Hffffff&,OutlineColour=&H000000&,"
-              f"BorderStyle=3,Outline=2,Shadow=0'")
+              f"PrimaryColour=&Hffffff&,OutlineColour=&H000000&,BackColour=&H80000000&,"
+              f"BorderStyle=1,Outline=2,Shadow=1,"
+              f"Alignment=2,MarginV=40,MarginL=80,MarginR=80,"
+              f"Bold=0'")
         cmd = ["ffmpeg", "-y", "-i", str(in_p), "-vf", vf,
                "-c:v", "libx264", "-preset", "veryfast", "-crf", "22",
                "-c:a", "copy", str(out_p)]

@@ -20,6 +20,17 @@ anthropic>=0.25
 
 # Real video / lip-sync providers (optional — install only what you use)
 fal-client>=1.0.0        # fal.ai SVD + SadTalker (set FAL_KEY in .env)
+replicate>=1.0.0         # Replicate Wav2Lip + SVD (set REPLICATE_API_TOKEN in .env)
+
+# Local Stable Diffusion (optional — set LOCAL_SD=1 to use)
+# Requires CUDA-enabled torch. For RTX 30/40-series:
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+# Then:
+#   pip install diffusers transformers accelerate safetensors
+diffusers>=0.27          # SDXL Turbo / SD 1.5 / Flux pipelines
+transformers>=4.40
+accelerate>=0.30
+safetensors>=0.4
 
 # Optional / nice-to-have
 pyttsx3>=2.90        # offline TTS fallback
