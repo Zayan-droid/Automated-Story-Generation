@@ -14,6 +14,7 @@ class RunContext:
     scene_count: int = 4
     with_bgm: bool = True
     with_subtitles: bool = True
+    subtitle_language: str = "English"
     width: int = 1280
     height: int = 720
     fps: int = 24

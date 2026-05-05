@@ -47,6 +47,7 @@ class VideoAgent:
     # ---- public ----------------------------------------------------------
 
     def run(self, state: PipelineState, with_subtitles: bool = True,
+            subtitle_language: str = "English",
             width: int = DEFAULT_WIDTH, height: int = DEFAULT_HEIGHT,
             fps: int = DEFAULT_FPS,
             use_text_to_video: Optional[bool] = None,
@@ -54,8 +55,8 @@ class VideoAgent:
             cinematic_post: bool = True) -> VideoOutput:
         if not state.script:
             raise ValueError("phase 3 requires state.script (run phase 1 first)")
-        log.info("phase 3 start (project=%s, %dx%d@%d, subs=%s)",
-                 state.project_id, width, height, fps, with_subtitles)
+        log.info("phase 3 start (project=%s, %dx%d@%d, subs=%s, lang=%s)",
+                 state.project_id, width, height, fps, with_subtitles, subtitle_language)
         state.phase3.status = "running"
         state.phase3.started_at = datetime.utcnow().isoformat()
 
@@ -88,7 +89,7 @@ class VideoAgent:
 
             # 4. Final crossfade compositor across scenes + master audio.
             final_video = self._compose_final(state, frames, with_subtitles,
-                                              width, height, fps)
+                                              subtitle_language, width, height, fps)
 
             output = VideoOutput(
                 project_id=state.project_id,
@@ -396,7 +397,8 @@ class VideoAgent:
     # ---- step 4: final composition --------------------------------------
 
     def _compose_final(self, state: PipelineState, frames: List[SceneFrame],
-                       with_subtitles: bool, width: int, height: int, fps: int) -> Path:
+                       with_subtitles: bool, subtitle_language: str,
+                       width: int, height: int, fps: int) -> Path:
         proj = project_dir(state.project_id)
         out = proj / "final_output.mp4"
         clips = [f.clip_path for f in frames if f.clip_path]
@@ -425,6 +427,33 @@ class VideoAgent:
                 })
         if not sub_lines:
             return out
+        
+        # Translate subtitles if needed
+        if subtitle_language and subtitle_language.lower() != "english":
+            log.info("translating %d subtitle lines to %s...", len(sub_lines), subtitle_language)
+            try:
+                # Combine all text to translate at once to save API calls, separated by a rare delimiter.
+                delim = "\n||\n"
+                combined = delim.join(line["text"] for line in sub_lines)
+                
+                # Use standard text_generate tool
+                res = self.tools.execute(
+                    "llm.text_generate",
+                    prompt=f"Translate the following subtitle lines to {subtitle_language}. Keep the exact same number of lines and preserve the '||' delimiter between them. Do not add any extra commentary.\n\n{combined}"
+                )
+                if res.success:
+                    translated_chunks = [c.strip() for c in res.data.split("||")]
+                    if len(translated_chunks) == len(sub_lines):
+                        for i, line in enumerate(sub_lines):
+                            line["text"] = translated_chunks[i]
+                        log.info("translation successful")
+                    else:
+                        log.warning("translation chunk count mismatch (%d vs %d), falling back to English", len(translated_chunks), len(sub_lines))
+                else:
+                    log.warning("translation failed: %s", res.error)
+            except Exception as e:
+                log.warning("translation error: %s", e)
+
         subbed = proj / "final_output_subtitled.mp4"
         sub_res = self.tools.execute(
             "video.subtitle",

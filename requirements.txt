@@ -11,6 +11,7 @@ python-multipart>=0.0.9
 # Media
 Pillow>=10.0
 gTTS>=2.4
+edge-tts>=7.0.0
 requests>=2.31
 
 # LLM providers (all optional — pip install only what you use)

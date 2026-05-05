@@ -30,7 +30,7 @@ class AudioAgent:
     # ---- public ----------------------------------------------------------
 
     def run(self, state: PipelineState, with_bgm: bool = True,
-            tts_engine: str = "gtts") -> AudioOutput:
+            tts_engine: str = "edge") -> AudioOutput:
         if not state.script:
             raise ValueError("phase 2 requires state.script (run phase 1 first)")
         log.info("phase 2 start (project=%s, engine=%s)", state.project_id, tts_engine)
@@ -73,10 +73,12 @@ class AudioAgent:
         for c in script.characters.characters:
             tld = self._tld_for(c)
             rate = self._rate_for(c)
+            voice_id = self._edge_voice_for(c)
             out.append(VoiceConfig(
                 character_id=c.id,
                 engine=default_engine,
                 language="en",
+                voice_id=voice_id,
                 tld=tld,
                 rate=rate,
                 tone=c.voice_style,
@@ -93,6 +95,18 @@ class AudioAgent:
         if c.role == "narrator":
             return "com"
         return "com.au"
+
+    @staticmethod
+    def _edge_voice_for(c: Character) -> str:
+        if c.role == "narrator":
+            return "en-US-ChristopherNeural"
+        if c.voice_age == "child" or "energetic" in c.voice_style.lower():
+            return "en-US-AnaNeural"
+        if c.voice_age == "elderly":
+            return "en-GB-RyanNeural"
+        if c.voice_gender == "female":
+            return "en-US-AriaNeural"
+        return "en-US-GuyNeural"
 
     @staticmethod
     def _rate_for(c: Character) -> int:
@@ -127,6 +141,7 @@ class AudioAgent:
                     language=cfg.language if cfg else "en",
                     tld=cfg.tld if cfg else "com",
                     rate=cfg.rate if cfg else 175,
+                    voice=cfg.voice_id if cfg and cfg.voice_id else "en-US-GuyNeural",
                 )
                 if not tts_res.success:
                     log.warning("tts failed for %s: %s — using silent placeholder",

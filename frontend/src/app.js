@@ -67,6 +67,7 @@ async function startRun() {
     scene_count: parseInt($("scenes").value, 10),
     with_bgm: $("bgm").checked,
     with_subtitles: $("subs").checked,
+    subtitle_language: $("sub-lang").value,
   };
   appendLog(`POST /api/pipeline/run …`);
   const res = await fetch("/api/pipeline/run", {

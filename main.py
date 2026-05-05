@@ -48,6 +48,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         scene_count=args.scenes,
         with_bgm=not args.no_bgm,
         with_subtitles=not args.no_subs,
+        subtitle_language=args.subtitle_lang,
         on_event=_print_event,
         use_text_to_video=use_t2v,
         use_lip_sync=use_lip,
@@ -194,6 +195,7 @@ def build_parser() -> argparse.ArgumentParser:
     rp.add_argument("--scenes", type=int, default=4)
     rp.add_argument("--no-bgm", action="store_true")
     rp.add_argument("--no-subs", action="store_true")
+    rp.add_argument("--subtitle-lang", default="English", help="Subtitle language")
     rp.add_argument("--no-real-video", action="store_true",
                     help="force ffmpeg ken-burns even if FAL_KEY is set (saves API credit)")
     rp.add_argument("--no-lipsync", action="store_true",

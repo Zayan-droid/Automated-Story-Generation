@@ -32,8 +32,8 @@ class SubtitleTool(BaseTool):
         # Alignment=2 = bottom-center (ASS standard).
         # MarginV=40 keeps lines off the very edge.
         # WrapStyle=2 = no automatic line breaks unless we add \N (forces single line then wraps to 2).
-        vf = (f"subtitles='{srt_arg}':"
-              f"force_style='FontName=Arial,FontSize={font_size},"
+        vf = (f"subtitles=filename='{srt_arg}':"
+              f"force_style='FontSize={font_size},"
               f"PrimaryColour=&Hffffff&,OutlineColour=&H000000&,BackColour=&H80000000&,"
               f"BorderStyle=1,Outline=2,Shadow=1,"
               f"Alignment=2,MarginV=40,MarginL=80,MarginR=80,"

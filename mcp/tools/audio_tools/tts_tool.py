@@ -22,6 +22,14 @@ class TtsTool(BaseTool):
         out.parent.mkdir(parents=True, exist_ok=True)
 
         engine = engine.lower()
+        if engine == "edge":
+            try:
+                actual = self._edge_tts(text, out, voice)
+                return ToolResult(success=True, data=str(actual), metadata={"engine": "edge"})
+            except Exception as e:
+                log.warning("edge-tts failed (%s) — falling back to gTTS", e)
+                engine = "gtts"
+
         if engine == "elevenlabs" and os.getenv("ELEVENLABS_API_KEY"):
             try:
                 actual = self._eleven_tts(text, out, voice)
@@ -58,6 +66,14 @@ class TtsTool(BaseTool):
         if out.suffix.lower() != ".mp3":
             out = out.with_suffix(".mp3")
         gTTS(text=text, lang=language, tld=tld, slow=False).save(str(out))
+        return out
+
+    def _edge_tts(self, text: str, out: Path, voice: str = "") -> Path:
+        voice_id = voice or "en-US-GuyNeural"
+        if out.suffix.lower() != ".mp3":
+            out = out.with_suffix(".mp3")
+        cmd = ["edge-tts", "--voice", voice_id, "--text", text, "--write-media", str(out)]
+        subprocess.run(cmd, check=True, capture_output=True)
         return out
 
     def _pyttsx3(self, text: str, out: Path, rate: int = 175, voice: str = "") -> Path:

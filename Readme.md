@@ -208,9 +208,10 @@ If no LLM key is configured, a deterministic four-act template (in
 * **Tasks** — per-line TTS with character-consistent voices, mood-based BGM,
   master mix, timing manifest
 * **Tools**
-  * **gTTS** (default, free, online) — accents differ per character via TLD
+  * **edge-tts** (default, free, online) — Microsoft Azure Neural Voices mapped dynamically to character archetypes (e.g., `en-US-AriaNeural`, `en-US-ChristopherNeural`).
+  * **gTTS** (fallback, free, online)
   * **pyttsx3** (offline fallback)
-  * **ElevenLabs** (if API key set)
+  * **ElevenLabs** (premium, if API key set)
   * **silent placeholder** (always works — used in tests)
   * Background music synthesised by ffmpeg's `lavfi` filter graph
     (mood-keyed sine layers + tremolo + fade)
@@ -255,8 +256,13 @@ will automatically:
 | `HF_TOKEN` | DAMO text-to-video-ms | — |
 | (none) | ffmpeg ken-burns | heuristic mouth-zoom |
 
+#### Subtitles & Multi-Language Support
+* The pipeline natively supports **multi-language subtitle translations** (English, Japanese, Spanish, etc.).
+* Dialogue is intercepted and translated via the LLM agent, then burned directly into the final MP4.
+* Uses system-level font fallbacks via `ffmpeg`'s `libass` to ensure perfect rendering of non-Latin CJK characters.
+
 * **Output** — `VideoOutput` with multi-shot `frames`, `portraits`,
-  `final_output.mp4`, plus per-shot MP4s under `data/outputs/<pid>/video/shots/`
+  `final_output.mp4` (and `final_output_subtitled.mp4`), plus per-shot MP4s under `data/outputs/<pid>/video/shots/`
 
 ### Phase 4 — Web Interface (`backend/` + `frontend/`)
 

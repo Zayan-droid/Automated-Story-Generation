@@ -13,7 +13,7 @@ _orchestrator = PipelineOrchestrator()
 
 def run_full_async(prompt: str, project_id: str, target_duration_s: int = 45,
                    scene_count: int = 4, with_bgm: bool = True,
-                   with_subtitles: bool = True) -> None:
+                   with_subtitles: bool = True, subtitle_language: str = "English") -> None:
     def push(ev: ProgressEvent) -> None:
         run_registry.push_event(project_id, {
             "phase": ev.phase, "status": ev.status, "message": ev.message,
@@ -29,6 +29,7 @@ def run_full_async(prompt: str, project_id: str, target_duration_s: int = 45,
             scene_count=scene_count,
             with_bgm=with_bgm,
             with_subtitles=with_subtitles,
+            subtitle_language=subtitle_language,
             on_event=push,
         )
     except Exception as e:  # noqa: BLE001

@@ -49,6 +49,7 @@ class PipelineOrchestrator:
         scene_count: int = 4,
         with_bgm: bool = True,
         with_subtitles: bool = True,
+        subtitle_language: str = "English",
         project_id: Optional[str] = None,
         use_text_to_video: Optional[bool] = None,
         use_lip_sync: Optional[bool] = None,
@@ -61,6 +62,7 @@ class PipelineOrchestrator:
             scene_count=scene_count,
             with_bgm=with_bgm,
             with_subtitles=with_subtitles,
+            subtitle_language=subtitle_language,
             use_text_to_video=use_text_to_video,
             use_lip_sync=use_lip_sync,
         )
@@ -156,6 +158,7 @@ class PipelineOrchestrator:
         g.add("phase3_video",
               lambda c: self.video.run(
                   c.state, with_subtitles=c.with_subtitles,
+                  subtitle_language=c.subtitle_language,
                   width=c.width, height=c.height, fps=c.fps,
                   use_text_to_video=c.use_text_to_video,
                   use_lip_sync=c.use_lip_sync,

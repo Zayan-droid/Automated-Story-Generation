@@ -22,6 +22,7 @@ class RunRequest(BaseModel):
     scene_count: int = 4
     with_bgm: bool = True
     with_subtitles: bool = True
+    subtitle_language: str = "English"
 
 
 class RunResponse(BaseModel):
@@ -48,6 +49,7 @@ def start_run(req: RunRequest, background: BackgroundTasks):
         scene_count=req.scene_count,
         with_bgm=req.with_bgm,
         with_subtitles=req.with_subtitles,
+        subtitle_language=req.subtitle_language,
     )
     return RunResponse(
         project_id=project_id,
