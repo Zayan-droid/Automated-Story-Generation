@@ -23,7 +23,7 @@ import os
 import shutil
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from mcp.tool_executor import ToolExecutor
 from shared.constants import DEFAULT_FPS, DEFAULT_HEIGHT, DEFAULT_WIDTH, PHASE_VIDEO
@@ -416,54 +416,131 @@ class VideoAgent:
         if not with_subtitles or not state.audio:
             return out
 
-        # Burn subtitles using the timing manifest.
-        sub_lines = []
+        # Build English subtitle lines from the timing manifest.
+        en_lines: List[Dict[str, Any]] = []
         for seg in state.audio.manifest.segments:
             if seg.kind == "dialogue" and seg.text:
-                sub_lines.append({
+                en_lines.append({
                     "start_ms": seg.start_ms,
                     "end_ms": seg.end_ms,
                     "text": seg.text,
                 })
-        if not sub_lines:
+        if not en_lines:
             return out
-        
-        # Translate subtitles if needed
-        if subtitle_language and subtitle_language.lower() != "english":
-            log.info("translating %d subtitle lines to %s...", len(sub_lines), subtitle_language)
-            try:
-                # Combine all text to translate at once to save API calls, separated by a rare delimiter.
-                delim = "\n||\n"
-                combined = delim.join(line["text"] for line in sub_lines)
-                
-                # Use standard text_generate tool
-                res = self.tools.execute(
-                    "llm.text_generate",
-                    prompt=f"Translate the following subtitle lines to {subtitle_language}. Keep the exact same number of lines and preserve the '||' delimiter between them. Do not add any extra commentary.\n\n{combined}"
-                )
-                if res.success:
-                    translated_chunks = [c.strip() for c in res.data.split("||")]
-                    if len(translated_chunks) == len(sub_lines):
-                        for i, line in enumerate(sub_lines):
-                            line["text"] = translated_chunks[i]
-                        log.info("translation successful")
-                    else:
-                        log.warning("translation chunk count mismatch (%d vs %d), falling back to English", len(translated_chunks), len(sub_lines))
-                else:
-                    log.warning("translation failed: %s", res.error)
-            except Exception as e:
-                log.warning("translation error: %s", e)
 
-        subbed = proj / "final_output_subtitled.mp4"
-        sub_res = self.tools.execute(
-            "video.subtitle",
-            in_path=str(out), out_path=str(subbed),
-            lines=sub_lines, font_size=20,
+        # ---- Multi-language subtitle tracks --------------------------------
+        # We always offer these as switchable soft-sub tracks in the final MP4
+        # so the user can change language inside their video player.
+        target_langs = ["English", "French", "Spanish", "German", "Urdu"]
+        tracks: Dict[str, List[Dict[str, Any]]] = {"English": en_lines}
+        for lang in target_langs:
+            if lang == "English":
+                continue
+            translated = self._translate_lines(en_lines, lang)
+            if translated:
+                tracks[lang] = translated
+
+        # No burn-in: subtitles are exposed as switchable soft tracks only,
+        # so the player can change/disable language without two layers
+        # stacking on screen. The user's chosen `subtitle_language` becomes
+        # the default track players auto-select on open.
+        default_lang = subtitle_language if subtitle_language in tracks else "English"
+
+        multi_out = proj / "final_output_multilang.mp4"
+        multi_res = self.tools.execute(
+            "video.multi_subtitle",
+            in_path=str(out), out_path=str(multi_out),
+            tracks=tracks, default_language=default_lang,
         )
-        if sub_res.success:
-            return subbed
-        log.warning("subtitle burn failed: %s", sub_res.error)
+        if multi_res.success:
+            log.info("embedded %d soft-sub tracks (%s); default=%s",
+                     multi_res.metadata.get("track_count"),
+                     ", ".join(multi_res.metadata.get("languages", [])),
+                     default_lang)
+            return multi_out
+        log.warning("multi-language sub embed failed: %s — returning unsubbed video",
+                    multi_res.error)
         return out
+
+    # Mapping for free Google Translate fallback (deep-translator codes).
+    _GT_CODES = {
+        "english": "en", "french": "fr", "spanish": "es",
+        "german": "de", "urdu": "ur", "arabic": "ar", "hindi": "hi",
+        "chinese": "zh-CN", "japanese": "ja", "korean": "ko",
+        "russian": "ru", "italian": "it", "portuguese": "pt",
+    }
+
+    def _translate_lines(self, lines: List[Dict[str, Any]], language: str
+                         ) -> Optional[List[Dict[str, Any]]]:
+        """Translate subtitle line texts to the target language.
+
+        Strategy:
+          1. Try the LLM with a `||`-delimited batch prompt.
+          2. If the LLM is mock / returns wrong chunk count / errors, fall
+             back to free Google Translate via `deep-translator` (no API
+             key required, line-by-line).
+
+        Returns the translated line list (timing preserved 1:1) or None if
+        every path fails — caller will then skip that subtitle track.
+        """
+        if not lines:
+            return None
+        log.info("translating %d subtitle lines to %s...", len(lines), language)
+
+        # ---- attempt 1: LLM batch translation -----------------------------
+        try:
+            combined = "\n||\n".join(ln["text"] for ln in lines)
+            prompt = (
+                f"Translate the following subtitle lines to {language}. "
+                f"Return EXACTLY the same number of lines, separated by the "
+                f"'||' delimiter on its own line. Preserve tone and brevity. "
+                f"Do not add commentary, numbering, or quotes.\n\n{combined}"
+            )
+            res = self.tools.execute("llm.text_generate", prompt=prompt)
+            if res.success:
+                chunks = [c.strip() for c in res.data.split("||")]
+                chunks = [c for c in chunks if c]
+                if len(chunks) == len(lines):
+                    return [
+                        {"start_ms": s["start_ms"], "end_ms": s["end_ms"], "text": t}
+                        for s, t in zip(lines, chunks)
+                    ]
+                log.info("LLM translation to %s gave %d chunks (need %d) — "
+                         "falling back to Google Translate",
+                         language, len(chunks), len(lines))
+            else:
+                log.info("LLM translation to %s unavailable (%s) — using Google Translate",
+                         language, res.error)
+        except Exception as e:  # noqa: BLE001
+            log.info("LLM translation to %s errored (%s) — using Google Translate",
+                     language, e)
+
+        # ---- attempt 2: deep-translator (free Google Translate) ----------
+        code = self._GT_CODES.get(language.lower())
+        if not code:
+            log.warning("no Google Translate code for %s — skipping", language)
+            return None
+        try:
+            from deep_translator import GoogleTranslator
+            gt = GoogleTranslator(source="en", target=code)
+            translated_texts = []
+            for ln in lines:
+                src_text = ln["text"].strip()
+                try:
+                    translated_texts.append(gt.translate(src_text) or src_text)
+                except Exception as e:  # noqa: BLE001
+                    log.warning("Google Translate line failed for %s (%s) — using English",
+                                language, e)
+                    translated_texts.append(src_text)
+            log.info("Google Translate to %s succeeded (%d lines)",
+                     language, len(translated_texts))
+            return [
+                {"start_ms": s["start_ms"], "end_ms": s["end_ms"], "text": t}
+                for s, t in zip(lines, translated_texts)
+            ]
+        except Exception as e:  # noqa: BLE001
+            log.warning("Google Translate fallback for %s failed: %s", language, e)
+            return None
 
     # ---- serialization ---------------------------------------------------
 

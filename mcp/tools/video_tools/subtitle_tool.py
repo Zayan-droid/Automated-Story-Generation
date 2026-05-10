@@ -1,10 +1,28 @@
-"""Subtitle overlay — burn-in SRT subtitles via ffmpeg."""
+"""Subtitle overlay — burn-in SRT subtitles via ffmpeg + multi-track soft subs."""
 from __future__ import annotations
 import subprocess
 from pathlib import Path
 from typing import List, Dict, Any
 
 from mcp.base_tool import BaseTool, ToolResult
+
+
+# ISO 639-2/B language codes that ffmpeg/MP4 expect in -metadata language=...
+LANG_CODE = {
+    "english": "eng",
+    "french":  "fre",
+    "spanish": "spa",
+    "german":  "ger",
+    "urdu":    "urd",
+    "arabic":  "ara",
+    "hindi":   "hin",
+    "chinese": "chi",
+    "japanese":"jpn",
+    "korean":  "kor",
+    "russian": "rus",
+    "italian": "ita",
+    "portuguese":"por",
+}
 
 
 def _ms_to_srt_ts(ms: int) -> str:
@@ -59,3 +77,87 @@ class SubtitleTool(BaseTool):
                 f"{ln['text'].strip()}\n"
             )
         return "\n".join(chunks)
+
+
+class MultiSubtitleTool(BaseTool):
+    """Embed multiple SRT subtitle tracks into an MP4 as switchable soft subs.
+
+    Most modern players (VLC, MPV, web HTML5 with `<track>` exposure, MX Player,
+    Windows Movies & TV) expose these as a language menu — no re-encoding of
+    the video stream needed; we stream-copy and just attach subtitle streams
+    using the `mov_text` codec (the MP4-compatible subtitle codec).
+
+    Input shape:
+        tracks = {
+          "English": [{"start_ms": ..., "end_ms": ..., "text": ...}, ...],
+          "French":  [...],
+          ...
+        }
+    """
+    name = "video.multi_subtitle"
+    description = "Embed multiple language SRT tracks into an MP4 as switchable soft subtitles."
+    category = "video"
+
+    def run(self, in_path: str, out_path: str,
+            tracks: Dict[str, List[Dict[str, Any]]],
+            default_language: str = "English", **_) -> ToolResult:
+        in_p = Path(in_path)
+        out_p = Path(out_path)
+        out_p.parent.mkdir(parents=True, exist_ok=True)
+
+        if not tracks:
+            return ToolResult(success=False, error="no subtitle tracks provided")
+
+        # Write one .srt file per language alongside the output.
+        srt_dir = out_p.parent / "subtitles"
+        srt_dir.mkdir(parents=True, exist_ok=True)
+
+        # Stable ordering: default language first, then alphabetical.
+        ordered = sorted(tracks.keys(),
+                         key=lambda k: (k.lower() != default_language.lower(), k.lower()))
+
+        srt_paths: List[Path] = []
+        for lang in ordered:
+            lines = tracks[lang]
+            if not lines:
+                continue
+            srt = srt_dir / f"{lang.lower()}.srt"
+            srt.write_text(SubtitleTool._build_srt(lines), encoding="utf-8")
+            srt_paths.append(srt)
+
+        if not srt_paths:
+            return ToolResult(success=False, error="all subtitle tracks were empty")
+
+        cmd: List[str] = ["ffmpeg", "-y", "-i", str(in_p)]
+        for srt in srt_paths:
+            cmd += ["-i", str(srt)]
+        # Map video + audio from input 0, then each subtitle file in order.
+        cmd += ["-map", "0:v:0", "-map", "0:a:0?"]
+        for idx in range(len(srt_paths)):
+            cmd += ["-map", f"{idx + 1}:0"]
+        # Stream-copy A/V (no re-encode), encode subs as mov_text (MP4-compatible).
+        cmd += ["-c:v", "copy", "-c:a", "copy", "-c:s", "mov_text"]
+
+        # Per-stream metadata: language code + human-readable title (player menu).
+        for sub_idx, lang in enumerate(ordered[:len(srt_paths)]):
+            code = LANG_CODE.get(lang.lower(), "und")
+            cmd += [f"-metadata:s:s:{sub_idx}", f"language={code}"]
+            cmd += [f"-metadata:s:s:{sub_idx}", f"title={lang}"]
+            # Mark the default track as default + forced so players auto-select it.
+            if lang.lower() == default_language.lower():
+                cmd += [f"-disposition:s:{sub_idx}", "default"]
+
+        cmd.append(str(out_p))
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        if proc.returncode != 0:
+            return ToolResult(success=False, error=proc.stderr[-2000:],
+                              metadata={"cmd": " ".join(cmd)})
+        return ToolResult(
+            success=True, data=str(out_p),
+            metadata={
+                "languages": ordered[:len(srt_paths)],
+                "srt_paths": [str(p) for p in srt_paths],
+                "track_count": len(srt_paths),
+                "default_language": default_language,
+            },
+        )

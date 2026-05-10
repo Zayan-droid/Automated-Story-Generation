@@ -1,12 +1,14 @@
 """Video tools — ffmpeg ops, scene compositor, subtitle overlay."""
 from .ffmpeg_tool import FfmpegTool, ImageToClipTool
 from .compositor_tool import CompositorTool
-from .subtitle_tool import SubtitleTool
+from .subtitle_tool import SubtitleTool, MultiSubtitleTool
 from mcp.tool_registry import registry
 
 registry.register(FfmpegTool())
 registry.register(ImageToClipTool())
 registry.register(CompositorTool())
 registry.register(SubtitleTool())
+registry.register(MultiSubtitleTool())
 
-__all__ = ["FfmpegTool", "ImageToClipTool", "CompositorTool", "SubtitleTool"]
+__all__ = ["FfmpegTool", "ImageToClipTool", "CompositorTool",
+           "SubtitleTool", "MultiSubtitleTool"]
